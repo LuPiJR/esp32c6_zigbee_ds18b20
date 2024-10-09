@@ -8,7 +8,10 @@
 #include "ha/esp_zigbee_ha_standard.h"
 #include "ds18b20.h"
 #include "ds18b20_sensor.h"
-#include "temp_sensor_driver.h"
+#include "esp_sleep.h"
+#include "esp_wifi.h"
+
+
 
 #if !defined ZB_ED_ROLE
 #error Define ZB_ED_ROLE in idf.py menuconfig to compile sensor (End Device) source code.
@@ -19,6 +22,8 @@
 #define CUSTOM_SERVER_ENDPOINT_2 0x02
 
 static const char *TAG = "ESP_ZB_TEMP_SENSOR";
+esp_err_t esp_wifi_stop();  // Disable Wi-Fi if not used
+esp_err_t esp_bt_controller_disable();
 
 // Convert float temperature to Zigbee-compatible int16
 static int16_t zb_temperature_to_s16(float temp) {
@@ -37,8 +42,6 @@ static void esp_app_temp_sensor_handler(float temperature1, float temperature2) 
   int16_t measured_value1 = zb_temperature_to_s16(temperature1);
   int16_t measured_value2 = zb_temperature_to_s16(temperature2);
 
-  //Serial.println("Updating temperature sensor value...");
-  //Serial.println(measured_value);
   /* Update temperature sensor measured value */
     esp_zb_lock_acquire(portMAX_DELAY);
     esp_zb_zcl_set_attribute_val(
@@ -52,6 +55,7 @@ static void esp_app_temp_sensor_handler(float temperature1, float temperature2) 
     esp_zb_lock_release();
 }
 
+/*
 static void temp_sensor_value_update(void *arg) {
     float tsens_value1 = 0.0;
     float tsens_value2 = 0.0;
@@ -76,28 +80,42 @@ static void temp_sensor_value_update(void *arg) {
     esp_app_temp_sensor_handler(tsens_value1, tsens_value2);
     vTaskDelay(pdMS_TO_TICKS(5000));
   }
+}*/
+static void temp_sensor_value_update(void *arg) {
+    float tsens_value1 = 0.0;
+    float tsens_value2 = 0.0;
+
+    esp_err_t err1 = ds18b20_read_temperature(0, &tsens_value1);
+    esp_err_t err2 = ds18b20_read_temperature(1, &tsens_value2);
+
+    if (err1 == ESP_OK) {
+        ESP_LOGI("MAIN", "Temperature 1: %.2f°C", tsens_value1);
+    } else {
+        ESP_LOGE("MAIN", "Failed to read temperature 1");
+    }
+
+    if (err2 == ESP_OK) {
+        ESP_LOGI("MAIN", "Temperature 2: %.2f°C", tsens_value2);
+    } else {
+        ESP_LOGE("MAIN", "Failed to read temperature 2");
+    }
+
+    // Send the temperature data via Zigbee
+    esp_app_temp_sensor_handler(tsens_value1, tsens_value2);
+
+    // After reading and reporting, enter deep sleep
+    vTaskDelay(pdMS_TO_TICKS(30000));
+
+    esp_deep_sleep(60000000); // Sleep for 60 seconds (60000000 µs)
 }
 
 
-//static esp_err_t deferred_driver_init(void) {
-    // Initialize DS18B20 sensors
-    
-    //esp_err_t ds18b20_init_ret = ds18b20_init();
-    
-    //ESP_RETURN_ON_ERROR(ds18b20_init_ret, TAG, "Failed to initialize DS18B20 sensor(s)");
-
-  //  return ESP_OK;
-//}
 
 // Zigbee signal handler
 void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
     uint32_t *p_sg_p     = signal_struct->p_app_signal;
     esp_err_t err_status = signal_struct->esp_err_status;
     esp_zb_app_signal_type_t sig_type = *p_sg_p;
-
-    // Device Announcement
-    //esp_zb_zdo_signal_device_annce_params_t *dev_annce_params = NULL;
-
     
     switch (sig_type) {
     case ESP_ZB_ZDO_SIGNAL_SKIP_STARTUP:
@@ -110,9 +128,8 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
     case ESP_ZB_BDB_SIGNAL_DEVICE_REBOOT:
         if (err_status == ESP_OK) {
             // defferred_driver_init during boot to init functions
-            //ESP_LOGI(TAG, "Deferred driver initialization %s", deferred_driver_init() == ESP_OK ? "successful" : "failed");
             ESP_LOGI(TAG, "Device started up in %s factory-reset mode", esp_zb_bdb_is_factory_new() ? "" : "non");
-            xTaskCreate(temp_sensor_value_update, "temp_sensor_update", 4096, NULL, 10, NULL);
+            //xTaskCreate(temp_sensor_value_update, "temp_sensor_update", 4096, NULL, 10, NULL);
 
 
             if (esp_zb_bdb_is_factory_new()) {
@@ -203,7 +220,7 @@ static void esp_zb_task(void *pvParameters) {
     
     // Initialize Zigbee stack
     esp_zb_init(&zb_nwk_cfg);
-
+    vTaskDelay(pdMS_TO_TICKS(1000));
     // Create customized temperature sensor configurations for sensor 1 and sensor 2
     esp_zb_temperature_sensor_cfg_t sensor_cfg_1 = ESP_ZB_DEFAULT_TEMPERATURE_SENSOR_CONFIG();
     esp_zb_temperature_sensor_cfg_t sensor_cfg_2 = ESP_ZB_DEFAULT_TEMPERATURE_SENSOR_CONFIG();
@@ -265,8 +282,27 @@ static void esp_zb_task(void *pvParameters) {
 
 // Application entry point
 void app_main(void) {
-    // Zigbee platform configuration
     
+    // Initialize NVS flash
+    ESP_ERROR_CHECK(nvs_flash_init());
+
+    // Zigbee platform configuration
+    esp_zb_platform_config_t config = {
+            .radio_config = ESP_ZB_DEFAULT_RADIO_CONFIG(),
+            .host_config = ESP_ZB_DEFAULT_HOST_CONFIG(),
+        };
+
+    // Configure Zigbee platform
+    ESP_ERROR_CHECK(esp_zb_platform_config(&config));
+
+    esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+
+    if (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) {
+        ESP_LOGI(TAG, "Woke up from deep sleep by timer.");
+    } else {
+        ESP_LOGI(TAG, "Normal startup, initializing sensor.");
+    }
+
     esp_err_t ds18b20_init_ret = ds18b20_init();
     if (ds18b20_init_ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize DS18B20 sensor(s)");
@@ -274,18 +310,17 @@ void app_main(void) {
         return;  // Prevent further execution if the sensor initialization failed
     }
 
-    esp_zb_platform_config_t config = {
-        .radio_config = ESP_ZB_DEFAULT_RADIO_CONFIG(),
-        .host_config = ESP_ZB_DEFAULT_HOST_CONFIG(),
-    };
-
-    // Initialize NVS flash
-    ESP_ERROR_CHECK(nvs_flash_init());
-    // Configure Zigbee platform
-    ESP_ERROR_CHECK(esp_zb_platform_config(&config));
-
+    
     // Start Zigbee task
     xTaskCreate(esp_zb_task, "Zigbee_main", 4096, NULL, 5, NULL);
 
-    // Simulate some activity in the main task
+    xTaskCreate(temp_sensor_value_update, "temp_sensor_update", 4096, NULL, 10, NULL);
+    
 }
+
+//export IDF_PATH='/Users/lukaspicker/esp/esp-idf'
+
+
+//in the 2ds18b20 folder run . $HOME/esp/esp-idf/export.sh
+
+//idf.py -p /dev/tty.usbmodem101 erase-flash 
