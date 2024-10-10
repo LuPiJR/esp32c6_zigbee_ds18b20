@@ -80,6 +80,8 @@ static void temp_sensor_value_update(void *arg) {
     vTaskDelay(pdMS_TO_TICKS(5000));
   }
 }*/
+
+/* working delta
 static void temp_sensor_value_update(void *arg) {
     float tsens_value1 = 0.0;
     float tsens_value2 = 0.0;
@@ -118,6 +120,69 @@ static void temp_sensor_value_update(void *arg) {
 
         // Send the current temperatures to the Zigbee handler (or any other processing)
         esp_app_temp_sensor_handler(tsens_value1, tsens_value2);
+
+        // Delay before the next temperature read (adjust as needed)
+        vTaskDelay(pdMS_TO_TICKS(5000));  // 5 seconds delay
+    }
+}
+*/
+static void temp_sensor_value_update(void *arg) {
+    float tsens_value1 = 0.0;
+    float tsens_value2 = 0.0;
+    float prev_tsens_value1 = 0.0;
+    float prev_tsens_value2 = 0.0;
+    float delta_temp1 = 0.0;
+    float delta_temp2 = 0.0;
+
+    for (;;) {
+        // Read the current temperatures
+        esp_err_t err1 = ds18b20_read_temperature(0, &tsens_value1);
+        esp_err_t err2 = ds18b20_read_temperature(1, &tsens_value2);
+
+        // Check if the temperature read was successful
+        if (err1 == ESP_OK) {
+            // Calculate the delta for sensor 1
+            delta_temp1 = tsens_value1 - prev_tsens_value1;
+            ESP_LOGI("MAIN", "Temperature 1: %.2f°C, Delta 1: %.2f°C", tsens_value1, delta_temp1);
+
+            // Write the temperature to Zigbee attribute (Endpoint 10)
+            int16_t zigbee_temp1 = zb_temperature_to_s16(tsens_value1);
+            esp_zb_zcl_set_attribute_val(
+                HA_ESP_SENSOR_ENDPOINT,
+                ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT,
+                ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                ESP_ZB_ZCL_ATTR_TEMP_MEASUREMENT_VALUE_ID,
+                &zigbee_temp1,
+                false
+            );
+
+            // Update the previous temperature for the next calculation
+            prev_tsens_value1 = tsens_value1;
+        } else {
+            ESP_LOGE("MAIN", "Failed to read temperature 1");
+        }
+
+        if (err2 == ESP_OK) {
+            // Calculate the delta for sensor 2
+            delta_temp2 = tsens_value2 - prev_tsens_value2;
+            ESP_LOGI("MAIN", "Temperature 2: %.2f°C, Delta 2: %.2f°C", tsens_value2, delta_temp2);
+
+            // Write the temperature to Zigbee attribute (Endpoint 11)
+            int16_t zigbee_temp2 = zb_temperature_to_s16(tsens_value2);
+            esp_zb_zcl_set_attribute_val(
+                HA_ESP_SENSOR_ENDPOINT + 1,
+                ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT,
+                ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                ESP_ZB_ZCL_ATTR_TEMP_MEASUREMENT_VALUE_ID,
+                &zigbee_temp2,
+                false
+            );
+
+            // Update the previous temperature for the next calculation
+            prev_tsens_value2 = tsens_value2;
+        } else { 
+            ESP_LOGE("MAIN", "Failed to read temperature 2");
+        }
 
         // Delay before the next temperature read (adjust as needed)
         vTaskDelay(pdMS_TO_TICKS(5000));  // 5 seconds delay
@@ -268,7 +333,7 @@ static void esp_zb_task(void *pvParameters) {
     esp_zb_device_register(esp_zb_sensor_ep);  // This registers both endpoints
 
     // Set reporting information for both endpoints (using endpoint 1 here as an example)
-    esp_zb_zcl_reporting_info_t reporting_info1 = {
+    /*esp_zb_zcl_reporting_info_t reporting_info1 = {
         .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_SRV,
         .ep = HA_ESP_SENSOR_ENDPOINT,
         .cluster_id = ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT,
@@ -302,7 +367,7 @@ static void esp_zb_task(void *pvParameters) {
     esp_zb_zcl_update_reporting_info(&reporting_info1);
 
     esp_zb_zcl_update_reporting_info(&reporting_info2);
-
+*/
     // Start the Zigbee stack and let it handle the main loop
     ESP_ERROR_CHECK(esp_zb_start(false));
 
