@@ -55,64 +55,6 @@ static void esp_app_temp_sensor_handler(float temperature1, float temperature2) 
     esp_zb_lock_release();
 }
 
-/*
-static void temp_sensor_value_update(void *arg) {
-    float tsens_value1 = 0.0;
-    float tsens_value2 = 0.0;
-    for (;;) {
-
-        esp_err_t err1 = ds18b20_read_temperature(0, &tsens_value1);
-        esp_err_t err2 = ds18b20_read_temperature(1, &tsens_value2);
-
-    if (err1 == ESP_OK) {
-        ESP_LOGI("MAIN", "Temperature: %.2f°C", tsens_value1);  // Successfully read temperature
-    } else {
-        ESP_LOGE("MAIN", "Failed to read temperature");
-    }
-
-    if (err2 == ESP_OK) {
-        ESP_LOGI("MAIN", "Temperature: %.2f°C", tsens_value2);  // Successfully read temperature
-    } else { 
-       ESP_LOGE("MAIN", "Failed to read temperature");
-    }
-
-
-    esp_app_temp_sensor_handler(tsens_value1, tsens_value2);
-    vTaskDelay(pdMS_TO_TICKS(5000));
-  }
-}*/
-
-/*
-static void temp_sensor_value_update(void *arg) {
-    float tsens_value1 = 0.0;
-    float tsens_value2 = 0.0;
-
-    esp_err_t err1 = ds18b20_read_temperature(0, &tsens_value1);
-    esp_err_t err2 = ds18b20_read_temperature(1, &tsens_value2);
-
-    if (err1 == ESP_OK) {
-        ESP_LOGI("MAIN", "Temperature 1: %.2f°C", tsens_value1);
-    } else {
-        ESP_LOGE("MAIN", "Failed to read temperature 1");
-    }
-
-    if (err2 == ESP_OK) {
-        ESP_LOGI("MAIN", "Temperature 2: %.2f°C", tsens_value2);
-    } else {
-        ESP_LOGE("MAIN", "Failed to read temperature 2");
-    }
-
-    // Send the temperature data via Zigbee
-    esp_app_temp_sensor_handler(tsens_value1, tsens_value2);
-
-    // After reading and reporting, enter deep sleep
-    vTaskDelay(pdMS_TO_TICKS(30000));
-
-    esp_deep_sleep(60000000); // Sleep for 60 seconds (60000000 µs)
-}
-*/
-
-// Structure to hold previous temperature values in RTC memory
 RTC_DATA_ATTR float prev_tsens_value1 = 0.0;
 RTC_DATA_ATTR float prev_tsens_value2 = 0.0;
 
@@ -121,49 +63,62 @@ static void temp_sensor_value_update(void *arg) {
     float tsens_value2 = 0.0;
     float delta_temp1 = 0.0;
     float delta_temp2 = 0.0;
-    const float delta_threshold = 0.5;  // Example: only send if temperature change is > 0.5°C
-
-    // Read the current temperatures
+    const float delta_threshold = 0.5;  // Only send if temperature change > 0.5°C
+    
+    // Read temperature values
     esp_err_t err1 = ds18b20_read_temperature(0, &tsens_value1);
     esp_err_t err2 = ds18b20_read_temperature(1, &tsens_value2);
 
-    // Handle sensor 1 temperature reading
+    // Calculate delta for sensor 1
     if (err1 == ESP_OK) {
-        // Calculate the delta for sensor 1
         delta_temp1 = tsens_value1 - prev_tsens_value1;
         ESP_LOGI("MAIN", "Temperature 1: %.2f°C, Delta 1: %.2f°C", tsens_value1, delta_temp1);
+
+        // Only send if delta exceeds threshold
+        if (fabs(delta_temp1) > delta_threshold) {
+            int16_t zigbee_temp1 = zb_temperature_to_s16(tsens_value1);
+            esp_zb_zcl_set_attribute_val(
+                HA_ESP_SENSOR_ENDPOINT,
+                ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT,
+                ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                ESP_ZB_ZCL_ATTR_TEMP_MEASUREMENT_VALUE_ID,
+                &zigbee_temp1,
+                false
+            );
+            prev_tsens_value1 = tsens_value1;  // Update previous value after sending
+        } else {
+            ESP_LOGI("MAIN", "Temperature 1 change is too small, not sending.");
+        }
     } else {
         ESP_LOGE("MAIN", "Failed to read temperature 1");
     }
 
-    // Handle sensor 2 temperature reading
+    // Calculate delta for sensor 2
     if (err2 == ESP_OK) {
-        // Calculate the delta for sensor 2
         delta_temp2 = tsens_value2 - prev_tsens_value2;
         ESP_LOGI("MAIN", "Temperature 2: %.2f°C, Delta 2: %.2f°C", tsens_value2, delta_temp2);
+
+        // Only send if delta exceeds threshold
+        if (fabs(delta_temp2) > delta_threshold) {
+            int16_t zigbee_temp2 = zb_temperature_to_s16(tsens_value2);
+            esp_zb_zcl_set_attribute_val(
+                HA_ESP_SENSOR_ENDPOINT + 1,
+                ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT,
+                ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                ESP_ZB_ZCL_ATTR_TEMP_MEASUREMENT_VALUE_ID,
+                &zigbee_temp2,
+                false
+            );
+            prev_tsens_value2 = tsens_value2;  // Update previous value after sending
+        } else {
+            ESP_LOGI("MAIN", "Temperature 2 change is too small, not sending.");
+        }
     } else {
         ESP_LOGE("MAIN", "Failed to read temperature 2");
     }
-
-    // Decide whether to send the temperature data based on the delta threshold
-    if ((err1 == ESP_OK && fabs(delta_temp1) > delta_threshold) || 
-        (err2 == ESP_OK && fabs(delta_temp2) > delta_threshold)) {
-        // Send the temperature data via Zigbee only if the delta exceeds the threshold
-        ESP_LOGI("MAIN", "Sending temperature data because delta exceeded threshold.");
-        esp_app_temp_sensor_handler(tsens_value1, tsens_value2);
-    } else {
-        ESP_LOGI("MAIN", "Delta did not exceed threshold, not sending data.");
-    }
-    //esp_app_temp_sensor_handler(tsens_value1, tsens_value2);
-    // Store the current values in RTC memory for the next deep sleep cycle
-    prev_tsens_value1 = tsens_value1;
-    prev_tsens_value2 = tsens_value2;
-
-    // Wait a bit before entering deep sleep (optional)
-    vTaskDelay(pdMS_TO_TICKS(10000));  // Optional delay for handling other tasks
-
-    // Enter deep sleep for 60 seconds (60000000 µs)
-    esp_sleep_enable_timer_wakeup(30000000);  // Set deep sleep wake-up time
+    vTaskDelay(pdMS_TO_TICKS(10000));
+    // Enter deep sleep if necessary
+    esp_sleep_enable_timer_wakeup(30000000);  // Sleep for 60 seconds
     esp_deep_sleep_start();
 }
 
